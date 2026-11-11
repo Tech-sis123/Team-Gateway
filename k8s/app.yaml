@@ -20,7 +20,7 @@ spec:
       # imagePullSecrets: [{ name: regcred }]
       containers:
       - name: app
-        image: ghcr.io/tech-sis123/tapnod:latest
+        image: ghcr.io/tech-sis123/team-gateway:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 8080

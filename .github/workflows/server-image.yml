@@ -1,5 +1,5 @@
 # Builds the Tapnod server image (linux/amd64) and publishes it to GitHub Container Registry,
-# so the Forge sandbox can pull it: ghcr.io/tech-sis123/tapnod:latest
+# so the Forge sandbox can pull it: ghcr.io/tech-sis123/team-gateway:latest
 name: Build server image
 
 on:
@@ -29,5 +29,5 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ghcr.io/tech-sis123/tapnod:latest
-            ghcr.io/tech-sis123/tapnod:${{ github.sha }}
+            ghcr.io/tech-sis123/team-gateway:latest
+            ghcr.io/tech-sis123/team-gateway:${{ github.sha }}

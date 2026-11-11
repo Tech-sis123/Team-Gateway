@@ -98,7 +98,7 @@ docker build -t tapnod .
 docker run -p 8080:8080 tapnod
 ```
 
-**Kubernetes.** Every push to `main` that changes the server builds the image and publishes it to `ghcr.io/tech-sis123/tapnod:latest` (see `.github/workflows/server-image.yml`). The manifest in `k8s/app.yaml` creates a Deployment and a Service, both named `app`. The container listens on port 8080, the Service exposes port 80, and the health check is `/healthz`.
+**Kubernetes.** Every push to `main` that changes the server builds the image and publishes it to `ghcr.io/tech-sis123/team-gateway:latest` (see `.github/workflows/server-image.yml`). The manifest in `k8s/app.yaml` creates a Deployment and a Service, both named `app`. The container listens on port 8080, the Service exposes port 80, and the health check is `/healthz`.
 
 ```bash
 export KUBECONFIG=path/to/your-kubeconfig.yaml
