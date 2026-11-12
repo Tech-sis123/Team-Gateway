@@ -30,6 +30,8 @@ const DEMO = { id: 'cus_demo_amaka', tapnod_id: 'TN-0001-AO', name: 'Amaka Okafo
 const REQUEST_TTL_MS = 120_000;
 // Phone number the POS rings for the demo customer when none is typed (e.g. 08031234567).
 const DEMO_PHONE = process.env.DEMO_PHONE || '';
+// Phone calls: pressing 1 approves. Set CALL_REQUIRE_PIN=on to also ask for the 4-digit PIN.
+const CALL_PIN = process.env.CALL_REQUIRE_PIN === 'on';
 const LANGS = Object.keys(i18n.LANGS);
 
 const vapid = push.vapidFromSecret(APP_SECRET);
@@ -528,7 +530,7 @@ async function route(req, res) {
       if (r.status !== 'pending') return send(res, 409, { status: r.status });
       if (b.action === 'approve') {
         const c = await db.getCustomer(r.customer_id);
-        if (!c || !auth.checkPassword(String(b.pin || ''), c.password_hash)) return send(res, 401, { status: r.status, message: 'Wrong PIN.' });
+        if (CALL_PIN && (!c || !auth.checkPassword(String(b.pin || ''), c.password_hash))) return send(res, 401, { status: r.status, message: 'Wrong PIN.' });
       }
       r.status = b.action === 'approve' ? 'approved' : 'declined';
     }
@@ -565,7 +567,11 @@ async function voiceStep(r, step, rawDigits, kit, next) {
     return askChoice(`Hello ${name}. This is Tapnod. ${r.merchant_name} is asking you to pay ${amount}. `);
   }
   if (step === 'choice') {
-    if (digits === '1') return askPin('');
+    if (digits === '1') {
+      if (CALL_PIN) return askPin('');
+      r.status = 'approved';
+      return end(`Payment approved. You paid ${amount} to ${r.merchant_name}. Thank you. Goodbye.`);
+    }
     if (digits === '2') { r.status = 'declined'; return end('Payment declined. No money left your account. Goodbye.'); }
     return askChoice(`Again: ${r.merchant_name} is asking for ${amount}. `);
   }

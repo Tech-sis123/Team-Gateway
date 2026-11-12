@@ -63,12 +63,12 @@ For customers with a basic phone, or when the app isn't open. On the POS waiting
  POS: Call her phone ──> Tapnod server ──> LiveKit ──> caller agent ──> rings her phone
                                                          │
    "Hello Amaka. Bisi Ventures is asking you to pay fifteen thousand naira.
-    To approve, press 1. To decline, press 2."   ->  1  ->  "Type your 4 digit Tapnod PIN"
+    To approve, press 1. To decline, press 2."   ->  1
                                                          │
- POS shows Approved <── Tapnod server checks the PIN <───┘
+ POS shows Approved <── Tapnod server records her choice <───┘
 ```
 
-- The PIN is never read back, and she gets 3 tries.
+- Pressing 1 approves. Set `CALL_REQUIRE_PIN=on` to also ask for her 4-digit PIN (never read back, 3 tries).
 - If she approves in the app while on the call, the call ends by itself.
 - Each call carries a one-time code from the server, so nothing else can approve through the voice endpoint.
 

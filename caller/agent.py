@@ -2,7 +2,7 @@
 
 The Tapnod server sends this agent into a LiveKit room with the payment details.
 The agent rings the customer, reads the payment out, and she answers on her keypad:
-  1 = approve (then her 4-digit PIN), 2 = decline.
+  1 = approve (plus her 4-digit PIN if CALL_REQUIRE_PIN=on), 2 = decline.
 It reports every step back to the Tapnod server, which tells the POS.
 
 Run locally:  python agent.py dev
@@ -28,6 +28,7 @@ TRUNK_ID = os.getenv("SIP_OUTBOUND_TRUNK_ID", "")
 VOICE = os.getenv("CALL_VOICE", "aura-asteria-en")
 PIN_LENGTH = 4
 PIN_TRIES = 3
+REQUIRE_PIN = os.getenv("CALL_REQUIRE_PIN") == "on"  # off: pressing 1 approves
 
 
 class Keypad:
@@ -151,6 +152,14 @@ async def entrypoint(ctx: JobContext):
         res = await report(info, action="decline")
         if res.get("status") == "declined":
             await hang_up("Payment declined. No money left your account. Goodbye.")
+        else:
+            await still_waiting()
+        return
+
+    if not REQUIRE_PIN:
+        res = await report(info, action="approve")
+        if res.get("status") == "approved":
+            await hang_up(f"Payment approved. You paid {info.get('amount_words')} to {info.get('merchant')}. Thank you. Goodbye.")
         else:
             await still_waiting()
         return
