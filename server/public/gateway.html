@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tapnod caller phone</title>
+<link rel="stylesheet" href="/tapnod.css">
+<style>
+  body { padding: 20px; }
+  #call { display: block; width: 100%; min-height: 160px; font-size: 26px; margin-top: 18px; text-decoration: none; text-align: center; line-height: 160px; border-radius: 18px; }
+</style>
+</head>
+<body>
+  <div class="eyebrow">Tapnod · caller phone (Android)</div>
+  <div class="h1" id="state" style="margin-top:10px">Waiting for the POS…</div>
+  <p class="body" id="sub">Keep this page open. When the POS asks for a phone call, a big button appears: tap it, then tap Call, and put the call on <b>loudspeaker</b> next to the laptop.</p>
+  <a class="btn btn-primary" id="call" hidden>Call</a>
+<script>
+const $ = (id) => document.getElementById(id);
+const KEY = new URLSearchParams(location.search).get('key') || '';
+let wake = null;
+async function keepAwake() { try { wake = await navigator.wakeLock.request('screen'); } catch {} }
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') keepAwake(); });
+keepAwake();
+
+function local(p) { return p.startsWith('+234') ? '0' + p.slice(4) : p; }
+
+async function poll() {
+  try {
+    const r = await fetch('/api/bridge/dial?key=' + encodeURIComponent(KEY));
+    const d = await r.json();
+    if (r.status === 403) { $('state').textContent = 'Wrong key'; $('sub').textContent = 'Open this page as /gateway?key=YOUR_KEY'; return setTimeout(poll, 3000); }
+    if (d.dial) {
+      const num = local(d.dial.phone);
+      $('call').href = 'tel:' + num;
+      $('call').textContent = 'Call ' + num;
+      $('call').hidden = false;
+      $('state').textContent = 'Call the customer';
+      if (navigator.vibrate) navigator.vibrate([300, 150, 300]);
+      // Some phones open the dialer straight away; others need the tap.
+      try { location.href = 'tel:' + num; } catch {}
+      setTimeout(() => { $('call').hidden = true; $('state').textContent = 'Waiting for the POS…'; }, 60000);
+    } else if (!d.callcenter) {
+      $('sub').textContent = 'Open /callcenter?key=… on the laptop and press Start.';
+    } else {
+      $('sub').textContent = 'Laptop connected. When the POS asks for a call, tap the button, then Call, then loudspeaker.';
+    }
+  } catch {}
+  setTimeout(poll, 1000);
+}
+poll();
+</script>
+</body>
+</html>

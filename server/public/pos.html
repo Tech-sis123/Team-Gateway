@@ -334,6 +334,7 @@ $('call-phone').value = settings.callPhone || '';
 function showCall(state) {
   const who = sale ? sale.name.split(' ')[0] : 'the customer';
   const text = {
+    queued: 'Calling ' + who + '…',
     calling: 'Calling ' + who + '…',
     answered: who + ' picked up. She hears the amount and presses 1 to approve.',
     failed: 'Couldn\'t reach ' + who + '\'s phone. Try again, or she can approve in the app.',
@@ -341,7 +342,7 @@ function showCall(state) {
   }[state];
   if (text) $('call-msg').textContent = text;
   if (state === 'answered') $('wait-text').textContent = 'On the phone with ' + sale.name + '.';
-  $('call-btn').disabled = state === 'calling' || state === 'answered';
+  $('call-btn').disabled = ['queued', 'calling', 'answered'].includes(state);
 }
 $('call-btn').onclick = async () => {
   if (!sale) return;

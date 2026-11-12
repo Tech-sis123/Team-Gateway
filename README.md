@@ -72,6 +72,16 @@ For customers with a basic phone, or when the app isn't open. On the POS waiting
 - If she approves in the app while on the call, the call ends by itself.
 - Each call carries a one-time code from the server, so nothing else can approve through the voice endpoint.
 
+**Option A: free, with your own phones (no service at all).** Your Android phone makes a normal call from its own SIM; the laptop talks and listens.
+
+1. Set `CALL_BRIDGE_KEY` on the server to any secret word, e.g. `tapnod2026`.
+2. Laptop: open `https://<your-site>/callcenter?key=tapnod2026` in its **own window** and press **Start** (allow the microphone).
+3. Android phone: open `https://<your-site>/gateway?key=tapnod2026` and keep it open.
+4. POS: **Call her phone**. The Android phone shows a big **Call** button: tap it, tap Call, turn on **loudspeaker**, and place it next to the laptop.
+5. The laptop speaks the payment; she presses 1 or 2 on her phone; the laptop hears the key tone (DTMF) and approves or declines. The page also has **She pressed 1 / 2** buttons as a backup for a noisy room.
+
+When `CALL_BRIDGE_KEY` is set it is used first.
+
 **Option 0: Twilio free trial (no card, 75 free minutes).** Simplest for one demo phone.
 
 1. Sign up at twilio.com/try-twilio **with the Nigerian number you'll call** (it's verified automatically; trial calls only go to verified numbers in your sign-up country).
@@ -130,7 +140,8 @@ The tables are created automatically on start.
 | `VAPID_SECRET` | Signs sessions and notification keys. Falls back to `TOKEN_SECRET`. |
 | `YARNGPT_API_KEY` | Turns on Nigerian voices. |
 | `DEMO_CUSTOMER` | Creates the demo customer Amaka on start. Set to `off` to disable. |
-| `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` | Phone calls through Twilio (used first when set). |
+| `CALL_BRIDGE_KEY` | Free phone calls with your own Android phone and the laptop (used first when set). |
+| `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` | Phone calls through Twilio. |
 | `AT_USERNAME`, `AT_API_KEY`, `AT_VOICE_NUMBER` | Phone calls through Africa's Talking. |
 | `PUBLIC_URL` | This site's public https address, for Twilio and Africa's Talking callbacks. |
 | `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | Phone calls through LiveKit instead. |
@@ -198,6 +209,8 @@ server/
   tts.js                 Nigerian voices through YarnGPT
   public/landing.html    Landing page
   public/app.html        Customer app (also served at /demo)
+  public/callcenter.html Laptop side of the free call bridge: speaks, hears the keypad tones
+  public/gateway.html    Android side of the free call bridge: dials the customer
   public/pos.html        Laptop POS
   public/i18n.js         English, Pidgin, Yorùbá, Igbo, Hausa
   public/sw.js           Shows notifications when the page is closed

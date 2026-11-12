@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tapnod call centre</title>
+<link rel="stylesheet" href="/tapnod.css">
+<style>
+  body { max-width: 760px; margin: 0 auto; padding: 24px; }
+  .big { font-size: 34px; font-weight: 700; letter-spacing: -.02em; margin: 6px 0 0; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+  .meter { height: 10px; background: #eee; border-radius: 6px; overflow: hidden; margin-top: 10px; }
+  .meter i { display: block; height: 100%; width: 0; background: #1a7f4b; transition: width .1s; }
+  .keys { font: 600 28px/1 ui-monospace, monospace; letter-spacing: .3em; margin-top: 10px; min-height: 30px; }
+  .log { font: 13px/1.5 ui-monospace, monospace; color: #555; margin-top: 14px; max-height: 220px; overflow: auto; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+  <div class="eyebrow">Tapnod · call centre (laptop)</div>
+  <div class="big" id="state">Tap Start</div>
+  <p class="body" id="sub">This laptop does the talking. Put the Android phone that makes the call on loudspeaker, right next to the laptop.</p>
+  <div class="row">
+    <button class="btn btn-primary" id="start">Start</button>
+    <button class="btn" id="speak" disabled>Say it again</button>
+    <button class="btn" id="press1" disabled>She pressed 1</button>
+    <button class="btn" id="press2" disabled>She pressed 2</button>
+  </div>
+  <div class="card" style="margin-top:18px;padding:16px">
+    <div class="small">Microphone (what the laptop hears)</div>
+    <div class="meter"><i id="level"></i></div>
+    <div class="small" style="margin-top:12px">Keys heard</div>
+    <div class="keys" id="keys"></div>
+  </div>
+  <div class="log" id="log"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const KEY = new URLSearchParams(location.search).get('key') || '';
+const log = (t) => { $('log').textContent = new Date().toLocaleTimeString() + '  ' + t + '\n' + $('log').textContent; };
+
+/* ---------- DTMF: which key is this sound? (Goertzel filter on the 7 keypad tones) ---------- */
+const ROWS = [697, 770, 852, 941], COLS = [1209, 1336, 1477];
+const PAD = [['1', '2', '3'], ['4', '5', '6'], ['7', '8', '9'], ['*', '0', '#']];
+function goertzel(buf, rate, freq) {
+  const k = Math.round(buf.length * freq / rate), w = 2 * Math.PI * k / buf.length, c = 2 * Math.cos(w);
+  let s1 = 0, s2 = 0;
+  for (let i = 0; i < buf.length; i++) { const s0 = buf[i] + c * s1 - s2; s2 = s1; s1 = s0; }
+  return s1 * s1 + s2 * s2 - c * s1 * s2;
+}
+function dtmfKey(buf, rate) {
+  let energy = 0; for (let i = 0; i < buf.length; i++) energy += buf[i] * buf[i];
+  if (energy / buf.length < 1e-5) return null; // silence
+  const r = ROWS.map((f) => goertzel(buf, rate, f)), c = COLS.map((f) => goertzel(buf, rate, f));
+  const ri = r.indexOf(Math.max(...r)), ci = c.indexOf(Math.max(...c));
+  const rs = [...r].sort((a, b) => b - a), cs = [...c].sort((a, b) => b - a);
+  const tonePower = (r[ri] + c[ci]) * 2 / (buf.length * buf.length);
+  // Both tones clearly stronger than their neighbours, and a fair share of the whole sound.
+  if (rs[0] < rs[1] * 4 || cs[0] < cs[1] * 4) return null;
+  if (tonePower < (energy / buf.length) * 0.25) return null;
+  return PAD[ri][ci];
+}
+window.dtmfKey = dtmfKey; // for testing
+
+/* ---------- microphone ---------- */
+let ctx, buf, listening = false, onKey = null;
+let prev = null, streak = 0, fired = null, gap = 0;
+async function startMic() {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+  ctx = new AudioContext();
+  const src = ctx.createMediaStreamSource(stream);
+  // The audio engine calls us every ~43 ms with fresh sound, even when this tab is in the background.
+  const proc = ctx.createScriptProcessor(2048, 1, 1);
+  const mute = ctx.createGain(); mute.gain.value = 0;
+  src.connect(proc); proc.connect(mute); mute.connect(ctx.destination);
+  proc.onaudioprocess = (ev) => { buf = ev.inputBuffer.getChannelData(0); tickMic(); };
+}
+// One key press = the same tone heard in 2 frames in a row. It can fire again after 3 frames without it.
+function feed(k) {
+  streak = k && k === prev ? streak + 1 : (k ? 1 : 0);
+  prev = k;
+  if (!k) { if (++gap >= 3) fired = null; return null; }
+  gap = 0;
+  if (streak >= 2 && fired !== k) { fired = k; return k; }
+  return null;
+}
+function tickMic() {
+  let e = 0; for (const v of buf) e += v * v;
+  $('level').style.width = Math.min(100, Math.sqrt(e / buf.length) * 400) + '%';
+  if (!listening) return;
+  const k = feed(dtmfKey(buf, ctx.sampleRate));
+  if (k) {
+    $('keys').textContent = ($('keys').textContent + k).slice(-12);
+    log('heard key ' + k);
+    if (onKey) onKey(k);
+  }
+}
+window.feed = feed;
+
+/* ---------- talking ---------- */
+function speak(text) {
+  return new Promise((resolve) => {
+    listening = false; // don't listen to ourselves
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'en-GB'; u.rate = 0.95;
+    const v = speechSynthesis.getVoices().find((x) => /en[-_](NG|GB)/i.test(x.lang)) || speechSynthesis.getVoices().find((x) => /^en/i.test(x.lang));
+    if (v) u.voice = v;
+    u.onend = u.onerror = () => { setTimeout(() => { listening = true; resolve(); }, 300); };
+    speechSynthesis.speak(u);
+  });
+}
+function waitKey(ms) {
+  return new Promise((resolve) => {
+    const t = setTimeout(() => { onKey = null; resolve(null); }, ms);
+    onKey = (k) => { if (k === '1' || k === '2') { clearTimeout(t); onKey = null; resolve(k); } };
+  });
+}
+
+/* ---------- server ---------- */
+async function report(call, body) {
+  try {
+    const r = await fetch('/api/voice/requests/' + call.request_id, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ call_token: call.call_token, ...body }) });
+    return await r.json();
+  } catch { return {}; }
+}
+
+let current = null;
+async function handle(call) {
+  current = call;
+  $('state').textContent = 'Calling ' + call.first_name + '…';
+  $('sub').textContent = 'The Android phone is dialing ' + call.phone + '. Put it on loudspeaker next to the laptop.';
+  $('keys').textContent = '';
+  ['speak', 'press1', 'press2'].forEach((id) => { $(id).disabled = false; });
+  log('call for ' + call.request_id + ' to ' + call.phone);
+  const ask = `Hello ${call.first_name}. This is Tapnod. ${call.merchant} is asking you to pay ${call.amount_words}. To approve, press 1. To decline, press 2.`;
+  let key = null;
+  await new Promise((r) => setTimeout(r, 7000)); // give the phone time to ring and be answered
+  for (let i = 0; i < 6 && !key && current === call; i++) {
+    const st = await report(call, { action: 'status' });
+    if (st.status && st.status !== 'pending') { log('payment already ' + st.status); break; }
+    if (i === 0) await report(call, { action: 'call_status', status: 'answered' });
+    $('state').textContent = 'Talking to ' + call.first_name;
+    await speak(ask);
+    $('state').textContent = 'Listening for 1 or 2…';
+    key = await waitKey(9000);
+  }
+  if (current !== call) return;
+  if (key === '1') {
+    const res = await report(call, { action: 'approve' });
+    $('state').textContent = res.status === 'approved' ? 'Approved ✓' : 'Already ' + res.status;
+    if (res.status === 'approved') await speak(`Payment approved. You paid ${call.amount_words} to ${call.merchant}. Thank you. Goodbye.`);
+  } else if (key === '2') {
+    const res = await report(call, { action: 'decline' });
+    $('state').textContent = 'Declined';
+    if (res.status === 'declined') await speak('Payment declined. No money left your account. Goodbye.');
+  } else {
+    $('state').textContent = 'No answer';
+  }
+  await report(call, { action: 'call_status', status: 'ended' });
+  ['speak', 'press1', 'press2'].forEach((id) => { $(id).disabled = true; });
+  current = null;
+  $('sub').textContent = 'Waiting for the next call from the POS.';
+}
+
+// Manual backups, in case the room is too noisy for the tones.
+$('speak').onclick = () => current && speak(`Hello ${current.first_name}. This is Tapnod. ${current.merchant} is asking you to pay ${current.amount_words}. To approve, press 1. To decline, press 2.`);
+$('press1').onclick = () => onKey && onKey('1');
+$('press2').onclick = () => onKey && onKey('2');
+
+async function poll() {
+  try {
+    const r = await fetch('/api/bridge/next?key=' + encodeURIComponent(KEY));
+    const d = await r.json();
+    if (r.status === 403) { $('state').textContent = 'Wrong key'; $('sub').textContent = 'Open this page as /callcenter?key=YOUR_KEY'; return setTimeout(poll, 3000); }
+    if (!current) $('sub').textContent = d.gateway ? 'Ready. Android phone connected. Waiting for the POS…' : 'Ready. Open /gateway?key=… on the Android phone.';
+    if (d.call && !current) handle(d.call);
+  } catch {}
+  setTimeout(poll, 1000);
+}
+
+$('start').onclick = async () => {
+  $('start').disabled = true;
+  try { await startMic(); } catch (e) { $('state').textContent = 'Allow the microphone'; $('start').disabled = false; return; }
+  speechSynthesis.getVoices();
+  await speak('Tapnod call centre is ready.');
+  $('state').textContent = 'Waiting for the POS';
+  poll();
+};
+</script>
+</body>
+</html>

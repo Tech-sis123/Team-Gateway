@@ -32,6 +32,10 @@ const REQUEST_TTL_MS = 120_000;
 const DEMO_PHONE = process.env.DEMO_PHONE || '';
 // Phone calls: pressing 1 approves. Set CALL_REQUIRE_PIN=on to also ask for the 4-digit PIN.
 const CALL_PIN = process.env.CALL_REQUIRE_PIN === 'on';
+// Free phone calls: your own Android phone dials (/gateway), the laptop talks and listens (/callcenter).
+// Set CALL_BRIDGE_KEY to any secret word and open both pages with ?key=<that word>.
+const BRIDGE_KEY = process.env.CALL_BRIDGE_KEY || '';
+const bridgeSeen = { callcenter: 0, gateway: 0 };
 const LANGS = Object.keys(i18n.LANGS);
 
 const vapid = push.vapidFromSecret(APP_SECRET);
@@ -65,6 +69,8 @@ const STATIC = {
   '/app': ['app.html', 'text/html; charset=utf-8'],
   '/demo': ['app.html', 'text/html; charset=utf-8'],
   '/pos': ['pos.html', 'text/html; charset=utf-8'],
+  '/callcenter': ['callcenter.html', 'text/html; charset=utf-8'],
+  '/gateway': ['gateway.html', 'text/html; charset=utf-8'],
   '/tapnod.css': ['tapnod.css', 'text/css; charset=utf-8'],
   '/i18n.js': ['i18n.js', 'application/javascript; charset=utf-8'],
   '/sw.js': ['sw.js', 'application/javascript; charset=utf-8'],
@@ -433,13 +439,21 @@ async function route(req, res) {
   if (m === 'POST' && (match = p.match(/^\/api\/pos\/requests\/([\w-]+)\/call$/))) {
     const r = requests.get(match[1]);
     if (!r || refresh(r).status !== 'pending') return send(res, 409, { message: 'This payment is no longer waiting.' });
-    if (!calls.enabled() && !atcalls.enabled() && !twcalls.enabled()) return send(res, 503, { message: 'Phone calls are not set up on this server yet.' });
+    if (!BRIDGE_KEY && !calls.enabled() && !atcalls.enabled() && !twcalls.enabled()) return send(res, 503, { message: 'Phone calls are not set up on this server yet.' });
     const b = (await readJson(req)) || {};
     const c = await db.getCustomer(r.customer_id);
     const phone = calls.normalisePhone(b.phone || (c && c.phone) || (c && c.id === DEMO.id ? DEMO_PHONE : ''));
     if (!phone) return send(res, 400, { message: 'Type the customer\'s phone number, like 0803 123 4567.' });
     const room = 'tapnod-call-' + r.request_id;
     r.call = { status: 'calling', phone, tries: 0, origin: (process.env.PUBLIC_URL || siteOf(req).origin).replace(/\/+$/, '') };
+    if (BRIDGE_KEY) {
+      if (Date.now() - bridgeSeen.callcenter > 8000) {
+        r.call.status = 'failed';
+        return send(res, 503, { message: 'Open /callcenter on the laptop first (it does the talking).' });
+      }
+      r.call.status = 'queued';
+      return send(res, 200, { ok: true, phone: calls.maskPhone(phone) });
+    }
     if (twcalls.enabled()) {
       const t = atcalls.stepToken(APP_SECRET, r.request_id);
       const base = `${r.call.origin}/api/tw/voice?r=${r.request_id}&t=${t}`;
@@ -478,6 +492,35 @@ async function route(req, res) {
       return send(res, 502, { message: 'Couldn\'t start the call. Check the LiveKit settings.' });
     }
     return send(res, 200, { ok: true, phone: calls.maskPhone(phone) });
+  }
+
+  // Free call bridge. The laptop (/callcenter) takes the next call to talk on;
+  // the Android phone (/gateway) takes the number to dial.
+  if (m === 'GET' && (p === '/api/bridge/next' || p === '/api/bridge/dial')) {
+    if (!BRIDGE_KEY || url.searchParams.get('key') !== BRIDGE_KEY) return send(res, 403, { message: 'Wrong key.' });
+    const who = p.endsWith('next') ? 'callcenter' : 'gateway';
+    bridgeSeen[who] = Date.now();
+    const live = [...requests.values()].filter((x) => x.call && refresh(x).status === 'pending');
+    if (who === 'gateway') {
+      const r = live.find((x) => ['queued', 'calling'].includes(x.call.status) && !x.call.dialed);
+      if (!r) return send(res, 200, { dial: null, callcenter: Date.now() - bridgeSeen.callcenter < 8000 });
+      r.call.dialed = Date.now();
+      return send(res, 200, { dial: { request_id: r.request_id, phone: r.call.phone } });
+    }
+    const r = live.find((x) => x.call.status === 'queued');
+    if (!r) return send(res, 200, { call: null, gateway: Date.now() - bridgeSeen.gateway < 8000 });
+    r.call.status = 'calling';
+    const c = await db.getCustomer(r.customer_id);
+    return send(res, 200, {
+      call: {
+        request_id: r.request_id,
+        call_token: calls.callToken(APP_SECRET, r.request_id),
+        phone: r.call.phone,
+        first_name: String((c && c.name) || '').split(' ')[0],
+        merchant: r.merchant_name,
+        amount_words: i18n.moneyWords(r.amount_kobo),
+      },
+    });
   }
 
   // Africa's Talking asks what to do on the call. Set this as the voice number's callback URL:
