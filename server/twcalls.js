@@ -10,6 +10,13 @@ const API = process.env.TWILIO_API || 'https://api.twilio.com';
 
 const enabled = () => Boolean(SID && TOKEN && FROM);
 
+// Twilio wants StatusCallbackEvent repeated once per event, not space-separated.
+function callBody(to, url, statusUrl) {
+  const b = new URLSearchParams({ To: to, From: FROM, Url: url, Method: 'POST', StatusCallback: statusUrl, StatusCallbackMethod: 'POST', Timeout: '30' });
+  for (const ev of ['initiated', 'ringing', 'answered', 'completed']) b.append('StatusCallbackEvent', ev);
+  return b.toString();
+}
+
 async function dial(to, url, statusUrl) {
   const res = await fetch(`${API}/2010-04-01/Accounts/${SID}/Calls.json`, {
     method: 'POST',
@@ -17,11 +24,7 @@ async function dial(to, url, statusUrl) {
       Authorization: 'Basic ' + Buffer.from(`${SID}:${TOKEN}`).toString('base64'),
       'Content-Type': 'application/x-www-form-urlencoded',
     },
-    body: new URLSearchParams({
-      To: to, From: FROM, Url: url, Method: 'POST',
-      StatusCallback: statusUrl, StatusCallbackMethod: 'POST',
-      StatusCallbackEvent: 'answered completed', Timeout: '30',
-    }).toString(),
+    body: callBody(to, url, statusUrl),
     signal: AbortSignal.timeout(10000),
   });
   const data = await res.json().catch(() => ({}));
@@ -36,4 +39,4 @@ function getDigits(prompt, numDigits, actionUrl, timeout = 15) {
   return `<Gather input="dtmf" numDigits="${numDigits}" timeout="${timeout}" finishOnKey="#" action="${esc(actionUrl)}" method="POST">${say(prompt)}</Gather>`;
 }
 
-module.exports = { enabled, dial, say, xml, getDigits };
+module.exports = { enabled, dial, say, xml, getDigits, callBody };
