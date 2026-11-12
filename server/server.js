@@ -12,6 +12,8 @@ const auth = require('./auth');
 const calls = require('./calls');
 const atcalls = require('./atcalls');
 const twcalls = require('./twcalls');
+const plcalls = require('./plcalls');
+const vgcalls = require('./vgcalls');
 const i18n = require('./public/i18n');
 
 const PORT = process.env.PORT || 3000;
@@ -439,7 +441,7 @@ async function route(req, res) {
   if (m === 'POST' && (match = p.match(/^\/api\/pos\/requests\/([\w-]+)\/call$/))) {
     const r = requests.get(match[1]);
     if (!r || refresh(r).status !== 'pending') return send(res, 409, { message: 'This payment is no longer waiting.' });
-    if (!BRIDGE_KEY && !calls.enabled() && !atcalls.enabled() && !twcalls.enabled()) return send(res, 503, { message: 'Phone calls are not set up on this server yet.' });
+    if (!BRIDGE_KEY && !plcalls.enabled() && !vgcalls.enabled() && !calls.enabled() && !atcalls.enabled() && !twcalls.enabled()) return send(res, 503, { message: 'Phone calls are not set up on this server yet.' });
     const b = (await readJson(req)) || {};
     const c = await db.getCustomer(r.customer_id);
     const phone = calls.normalisePhone(b.phone || (c && c.phone) || (c && c.id === DEMO.id ? DEMO_PHONE : ''));
@@ -452,6 +454,19 @@ async function route(req, res) {
         return send(res, 503, { message: 'Open /callcenter on the laptop first (it does the talking).' });
       }
       r.call.status = 'queued';
+      return send(res, 200, { ok: true, phone: calls.maskPhone(phone) });
+    }
+    for (const [kit, path, name] of [[plcalls, 'pl', 'Plivo'], [vgcalls, 'vg', 'Vonage']]) {
+      if (!kit.enabled()) continue;
+      const t = atcalls.stepToken(APP_SECRET, r.request_id);
+      const base = `${r.call.origin}/api/${path}/voice?r=${r.request_id}&t=${t}`;
+      try {
+        r.call.session = await kit.dial(phone, base + '&step=start', `${r.call.origin}/api/${path}/event?r=${r.request_id}&t=${t}`);
+      } catch (e) {
+        console.warn('call failed', e.message);
+        r.call.status = 'failed';
+        return send(res, 502, { message: `Couldn't start the call (${name}): ` + e.message });
+      }
       return send(res, 200, { ok: true, phone: calls.maskPhone(phone) });
     }
     if (twcalls.enabled()) {
@@ -545,6 +560,30 @@ async function route(req, res) {
     return out(await voiceStep(r, step, f.dtmfDigits, atcalls, next));
   }
 
+  // Plivo (XML) and Vonage (JSON) fetch what to say from here, and report call progress to /event.
+  if (m === 'POST' && (match = p.match(/^\/api\/(pl|vg)\/(voice|event)$/))) {
+    const [, who, kind] = match;
+    const f = await atcalls.readForm(req); // handles both form posts (Plivo) and JSON (Vonage)
+    const r = requests.get(url.searchParams.get('r') || '');
+    const kit = who === 'pl' ? plcalls : vgcalls;
+    const out = (body) => {
+      res.writeHead(200, { 'Content-Type': who === 'pl' ? 'text/xml; charset=utf-8' : 'application/json' });
+      res.end(who === 'pl' ? plcalls.xml(body) : body);
+    };
+    const empty = who === 'pl' ? '' : '[]';
+    if (!r || !r.call || !atcalls.checkStepToken(APP_SECRET, r.request_id, url.searchParams.get('t'))) return out(who === 'pl' ? plcalls.say('Goodbye.') : vgcalls.join([vgcalls.say('Goodbye.')]));
+    if (kind === 'event') {
+      const st = String(f.status || f.CallStatus || '').toLowerCase();
+      if (['answered', 'in-progress'].includes(st) && r.call.status === 'calling') r.call.status = 'answered';
+      if (['busy', 'failed', 'timeout', 'unanswered', 'rejected', 'cancelled', 'no-answer'].includes(st)) r.call.status = 'failed';
+      if (st === 'completed' && ['calling', 'answered'].includes(r.call.status)) r.call.status = r.call.status === 'calling' ? 'failed' : 'ended';
+      return out(empty);
+    }
+    const digits = who === 'pl' ? f.Digits : (f.dtmf && f.dtmf.digits);
+    const next = (st) => `${r.call.origin}/api/${who}/voice?r=${r.request_id}&step=${st}&t=${atcalls.stepToken(APP_SECRET, r.request_id)}`;
+    return out(await voiceStep(r, url.searchParams.get('step') || 'start', digits, kit, next));
+  }
+
   // Twilio fetches what to say from here. Every URL we give Twilio carries the payment id and a signed token.
   if (m === 'POST' && (p === '/api/tw/voice' || p === '/api/tw/status')) {
     const f = await atcalls.readForm(req);
@@ -591,19 +630,21 @@ async function route(req, res) {
 
 // One phone-call script for Africa's Talking and Twilio: read the payment, 1 = approve, 2 = decline, then the PIN.
 async function voiceStep(r, step, rawDigits, kit, next) {
+  // kit.say / kit.getDigits make one instruction; kit.join puts a list of them together (XML text or Vonage JSON).
+  const join = kit.join || ((items) => items.join(''));
   const c = await db.getCustomer(r.customer_id);
   const amount = i18n.moneyWords(r.amount_kobo);
-  const end = (text) => { r.call.status = 'ended'; return kit.say(text); };
+  const end = (text) => { r.call.status = 'ended'; return join([kit.say(text)]); };
   r.call.status = 'answered';
   if (refresh(r).status !== 'pending') {
     const words = { approved: 'approved', declined: 'declined', expired: 'timed out', cancelled: 'cancelled by the shop' };
     return end(`This payment has already been ${words[r.status] || r.status}. Goodbye.`);
   }
   const digits = String(rawDigits || '').replace(/[^\d]/g, '');
-  const askChoice = (intro) => kit.getDigits(intro + 'To approve, press 1. To decline, press 2.', 1, next('choice'))
-    + kit.say('I did not get an answer, so nothing was paid. Goodbye.');
-  const askPin = (intro) => kit.getDigits(intro + 'Type your 4 digit Tapnod PIN now.', 4, next('pin'))
-    + kit.say('I did not get your PIN, so nothing was paid. Goodbye.');
+  const askChoice = (intro) => join([kit.getDigits(intro + 'To approve, press 1. To decline, press 2.', 1, next('choice')),
+    kit.say('I did not get an answer, so nothing was paid. Goodbye.')]);
+  const askPin = (intro) => join([kit.getDigits(intro + 'Type your 4 digit Tapnod PIN now.', 4, next('pin')),
+    kit.say('I did not get your PIN, so nothing was paid. Goodbye.')]);
 
   if (step === 'start') {
     const name = String((c && c.name) || '').split(' ')[0] || 'there';
@@ -616,6 +657,8 @@ async function voiceStep(r, step, rawDigits, kit, next) {
       return end(`Payment approved. You paid ${amount} to ${r.merchant_name}. Thank you. Goodbye.`);
     }
     if (digits === '2') { r.status = 'declined'; return end('Payment declined. No money left your account. Goodbye.'); }
+    r.call.asks = (r.call.asks || 0) + 1;
+    if (r.call.asks >= 2) return end('I did not get an answer, so nothing was paid. Goodbye.');
     return askChoice(`Again: ${r.merchant_name} is asking for ${amount}. `);
   }
   if (step === 'pin') {

@@ -82,6 +82,13 @@ For customers with a basic phone, or when the app isn't open. On the POS waiting
 
 When `CALL_BRIDGE_KEY` is set it is used first.
 
+**Option B: Plivo or Vonage (free trial credit, no card).**
+
+- **Plivo:** sign up at plivo.com (comes with free credit), copy the **Auth ID** and **Auth Token** from the dashboard, and the caller number you're given. Set `PLIVO_AUTH_ID`, `PLIVO_AUTH_TOKEN`, `PLIVO_FROM` and `PUBLIC_URL`.
+- **Vonage:** sign up at dashboard.nexmo.com with the number you'll call (trial accounts can call that number with `123456789` as the caller). Create a **Voice application**, generate its key pair, and set `VONAGE_APPLICATION_ID`, `VONAGE_PRIVATE_KEY` (the whole private key) and `PUBLIC_URL`.
+
+Order of use when several are set: free bridge, Plivo, Vonage, Twilio, Africa's Talking, LiveKit.
+
 **Option 0: Twilio free trial (no card, 75 free minutes).** Simplest for one demo phone.
 
 1. Sign up at twilio.com/try-twilio **with the Nigerian number you'll call** (it's verified automatically; trial calls only go to verified numbers in your sign-up country).
@@ -141,6 +148,8 @@ The tables are created automatically on start.
 | `YARNGPT_API_KEY` | Turns on Nigerian voices. |
 | `DEMO_CUSTOMER` | Creates the demo customer Amaka on start. Set to `off` to disable. |
 | `CALL_BRIDGE_KEY` | Free phone calls with your own Android phone and the laptop (used first when set). |
+| `PLIVO_AUTH_ID`, `PLIVO_AUTH_TOKEN`, `PLIVO_FROM` | Phone calls through Plivo. |
+| `VONAGE_APPLICATION_ID`, `VONAGE_PRIVATE_KEY`, `VONAGE_FROM` | Phone calls through Vonage (`VONAGE_FROM` defaults to the trial caller `123456789`). |
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` | Phone calls through Twilio. |
 | `AT_USERNAME`, `AT_API_KEY`, `AT_VOICE_NUMBER` | Phone calls through Africa's Talking. |
 | `PUBLIC_URL` | This site's public https address, for Twilio and Africa's Talking callbacks. |
@@ -218,6 +227,7 @@ server/
   calls.js               Starts phone calls through LiveKit
   atcalls.js             Phone calls through Africa's Talking
   twcalls.js             Phone calls through Twilio
+  plcalls.js, vgcalls.js Phone calls through Plivo and Vonage
 caller/
   agent.py               LiveKit agent: rings the customer, reads the payment, takes her PIN
 Dockerfile               Container image
