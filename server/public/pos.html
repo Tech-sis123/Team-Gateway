@@ -335,7 +335,7 @@ function showCall(state) {
   const who = sale ? sale.name.split(' ')[0] : 'the customer';
   const text = {
     calling: 'Calling ' + who + '…',
-    answered: who + ' picked up. She hears the amount and types her PIN.',
+    answered: who + ' picked up. She hears the amount and presses 1 to approve.',
     failed: 'Couldn\'t reach ' + who + '\'s phone. Try again, or she can approve in the app.',
     ended: 'Call ended.',
   }[state];
