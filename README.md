@@ -72,7 +72,15 @@ For customers with a basic phone, or when the app isn't open. On the POS waiting
 - If she approves in the app while on the call, the call ends by itself.
 - Each call carries a one-time code from the server, so nothing else can approve through the voice endpoint.
 
-**Set up (once):**
+**Option 1: Africa's Talking (Nigerian number, cheapest).** No agent to deploy: the server does everything.
+
+1. On africastalking.com (Live account, not Sandbox), request a Nigerian voice number: Voice, Phone numbers, request form, category **Test Number**.
+2. Set the number's **callback URL** to `https://<your-site>/api/at/voice`.
+3. Give the server `AT_USERNAME`, `AT_API_KEY` and `AT_VOICE_NUMBER` (e.g. `+234...`). Set `PUBLIC_URL=https://<your-site>` if your host doesn't pass https headers.
+
+When these are set, the POS uses Africa's Talking. Otherwise it uses LiveKit (below).
+
+**Option 2: LiveKit.** Set up (once):
 
 1. In your [LiveKit Cloud](https://cloud.livekit.io) project, open **Telephony** and add an **outbound SIP trunk** from a provider that can call Nigerian numbers (for example Twilio or Telnyx). Copy its trunk ID (`ST_...`).
 2. Deploy the agent in `caller/`:
@@ -116,7 +124,9 @@ The tables are created automatically on start.
 | `VAPID_SECRET` | Signs sessions and notification keys. Falls back to `TOKEN_SECRET`. |
 | `YARNGPT_API_KEY` | Turns on Nigerian voices. |
 | `DEMO_CUSTOMER` | Creates the demo customer Amaka on start. Set to `off` to disable. |
-| `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | Turn on approval by phone call (see above). |
+| `AT_USERNAME`, `AT_API_KEY`, `AT_VOICE_NUMBER` | Phone calls through Africa's Talking (used first when set). |
+| `PUBLIC_URL` | This site's public https address, for Africa's Talking callbacks. |
+| `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | Phone calls through LiveKit instead. |
 | `CALL_AGENT_NAME` | Name of the phone-call agent. Default `tapnod-caller`. |
 | `DEMO_PHONE` | Number the POS rings for Amaka when none is typed, e.g. `08031234567`. |
 | `DEMO_AUTO_LINK` | What happens when an unknown card is tapped: `demo` charges Amaka (default), `latest` charges the newest sign-up, a customer id charges that customer, empty shows "Card not linked". |
@@ -166,6 +176,7 @@ Customer requests use the header `Authorization: Bearer <token>`.
 | `POST /api/pos/requests/{id}/cancel` | The shop cancels while waiting |
 | `POST /api/pos/cards/link` | Link a card token to a customer |
 | `POST /api/pos/requests/{id}/call` | Ring the customer for approval (optional `phone`) |
+| `POST /api/at/voice` | Africa's Talking voice callback (returns call instructions as XML) |
 | `POST /api/voice/requests/{id}` | Used by the phone-call agent: call progress, approve with PIN, decline |
 
 ## Project layout
@@ -184,6 +195,7 @@ server/
   public/sw.js           Shows notifications when the page is closed
   public/tapnod.css      Shared styles
   calls.js               Starts phone calls through LiveKit
+  atcalls.js             Phone calls through Africa's Talking
 caller/
   agent.py               LiveKit agent: rings the customer, reads the payment, takes her PIN
 Dockerfile               Container image

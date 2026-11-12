@@ -10,6 +10,7 @@ const push = require('./push');
 const tts = require('./tts');
 const auth = require('./auth');
 const calls = require('./calls');
+const atcalls = require('./atcalls');
 const i18n = require('./public/i18n');
 
 const PORT = process.env.PORT || 3000;
@@ -429,13 +430,23 @@ async function route(req, res) {
   if (m === 'POST' && (match = p.match(/^\/api\/pos\/requests\/([\w-]+)\/call$/))) {
     const r = requests.get(match[1]);
     if (!r || refresh(r).status !== 'pending') return send(res, 409, { message: 'This payment is no longer waiting.' });
-    if (!calls.enabled()) return send(res, 503, { message: 'Phone calls are not set up on this server yet.' });
+    if (!calls.enabled() && !atcalls.enabled()) return send(res, 503, { message: 'Phone calls are not set up on this server yet.' });
     const b = (await readJson(req)) || {};
     const c = await db.getCustomer(r.customer_id);
     const phone = calls.normalisePhone(b.phone || (c && c.phone) || (c && c.id === DEMO.id ? DEMO_PHONE : ''));
     if (!phone) return send(res, 400, { message: 'Type the customer\'s phone number, like 0803 123 4567.' });
     const room = 'tapnod-call-' + r.request_id;
-    r.call = { status: 'calling', phone };
+    r.call = { status: 'calling', phone, tries: 0, origin: (process.env.PUBLIC_URL || siteOf(req).origin).replace(/\/+$/, '') };
+    if (atcalls.enabled()) {
+      try {
+        r.call.session = await atcalls.dial(phone, r.request_id);
+      } catch (e) {
+        console.warn('call failed', e.message);
+        r.call.status = 'failed';
+        return send(res, 502, { message: 'Couldn\'t start the call. Check the Africa\'s Talking settings and balance.' });
+      }
+      return send(res, 200, { ok: true, phone: calls.maskPhone(phone) });
+    }
     try {
       await calls.dial(room, {
         request_id: r.request_id,
@@ -452,6 +463,61 @@ async function route(req, res) {
       return send(res, 502, { message: 'Couldn\'t start the call. Check the LiveKit settings.' });
     }
     return send(res, 200, { ok: true, phone: calls.maskPhone(phone) });
+  }
+
+  // Africa's Talking asks what to do on the call. Set this as the voice number's callback URL:
+  //   https://<your-site>/api/at/voice
+  if (m === 'POST' && p === '/api/at/voice') {
+    const f = await atcalls.readForm(req);
+    const xmlOut = (inner) => { res.writeHead(200, { 'Content-Type': 'application/xml; charset=utf-8' }); res.end(atcalls.xml(inner)); };
+    // Which payment is this call about? Our own id (clientRequestId), the session, or the number we rang.
+    let r = requests.get(url.searchParams.get('r') || f.clientRequestId || '');
+    if (!r) {
+      const nums = [f.destinationNumber, f.callerNumber, f.clientDialedNumber].filter(Boolean).map(calls.normalisePhone);
+      r = [...requests.values()].reverse().find((x) => x.call && (x.call.session === f.sessionId || nums.includes(x.call.phone)));
+    }
+    if (!r || !r.call) return xmlOut(atcalls.say('Sorry, there is no Tapnod payment waiting for you. Goodbye.'));
+    if (f.isActive === '0') {
+      if (['calling', 'answered'].includes(r.call.status)) r.call.status = r.call.status === 'calling' ? 'failed' : 'ended';
+      return xmlOut('');
+    }
+    const step = url.searchParams.get('step') || 'start';
+    if (step !== 'start' && !atcalls.checkStepToken(APP_SECRET, r.request_id, url.searchParams.get('t'))) return xmlOut(atcalls.say('Goodbye.'));
+    const next = (s) => `${r.call.origin}/api/at/voice?r=${r.request_id}&step=${s}&t=${atcalls.stepToken(APP_SECRET, r.request_id)}`;
+    const c = await db.getCustomer(r.customer_id);
+    const amount = i18n.moneyWords(r.amount_kobo);
+    const end = (text) => { r.call.status = 'ended'; return xmlOut(atcalls.say(text)); };
+    r.call.status = 'answered';
+    if (refresh(r).status !== 'pending') {
+      const words = { approved: 'approved', declined: 'declined', expired: 'timed out', cancelled: 'cancelled by the shop' };
+      return end(`This payment has already been ${words[r.status] || r.status}. Goodbye.`);
+    }
+    const digits = String(f.dtmfDigits || '').replace(/[^\d]/g, '');
+    const askChoice = (intro) => xmlOut(atcalls.getDigits(intro + 'To approve, press 1. To decline, press 2.', 1, next('choice'))
+      + atcalls.say('I did not get an answer, so nothing was paid. Goodbye.'));
+    const askPin = (intro) => xmlOut(atcalls.getDigits(intro + 'Type your 4 digit Tapnod PIN now.', 4, next('pin'))
+      + atcalls.say('I did not get your PIN, so nothing was paid. Goodbye.'));
+
+    if (step === 'start') {
+      const name = String((c && c.name) || '').split(' ')[0] || 'there';
+      return askChoice(`Hello ${name}. This is Tapnod. ${r.merchant_name} is asking you to pay ${amount}. `);
+    }
+    if (step === 'choice') {
+      if (digits === '1') return askPin('');
+      if (digits === '2') { r.status = 'declined'; return end('Payment declined. No money left your account. Goodbye.'); }
+      return askChoice(`Again: ${r.merchant_name} is asking for ${amount}. `);
+    }
+    if (step === 'pin') {
+      if (digits.length === 4 && c && auth.checkPassword(digits, c.password_hash)) {
+        r.status = 'approved';
+        return end(`Payment approved. You paid ${amount} to ${r.merchant_name}. Thank you. Goodbye.`);
+      }
+      r.call.tries += 1;
+      if (r.call.tries >= 3) { r.status = 'declined'; return end('Too many wrong PINs, so the payment was declined. Goodbye.'); }
+      const left = 3 - r.call.tries;
+      return askPin(`That PIN is not correct. You have ${left} ${left === 1 ? 'try' : 'tries'} left. `);
+    }
+    return end('Goodbye.');
   }
 
   // The phone-call agent reports back here: call progress, and the customer's choice with her PIN.
