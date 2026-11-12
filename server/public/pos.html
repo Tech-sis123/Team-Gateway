@@ -111,6 +111,15 @@
         <div class="bar" style="background:#333"><i id="wait-bar" style="background:#8fe0a8"></i></div>
         <p class="small" style="margin-top:8px" id="wait-left"></p>
       </div>
+      <div class="card" id="call-box" style="padding:18px">
+        <div class="eyebrow">No smartphone? Ask by phone call</div>
+        <p class="small" style="margin-top:6px">We ring the customer, read the amount and she types her PIN on the keypad.</p>
+        <div style="display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:10px;margin-top:12px;align-items:stretch">
+          <input class="input" id="call-phone" type="tel" inputmode="tel" placeholder="Phone, e.g. 0803 123 4567" style="width:100%;min-width:0;margin:0">
+          <button class="btn btn-primary" id="call-btn" style="width:100%;min-width:0;margin:0">Call her phone</button>
+        </div>
+        <p class="small" id="call-msg" style="margin-top:8px"></p>
+      </div>
       <button class="btn" id="cancel-wait">Cancel payment</button>
     </section>
 
@@ -298,6 +307,7 @@ async function charge(extra) {
     sale = { id: r.request_id, name: r.customer_name, expires: r.expires_at_ms, amount: naira(), card: extra.card_last4 ? 'Card ···· ' + extra.card_last4 : 'Picked on POS' };
     $('wait-text').textContent = 'Sent to ' + r.customer_name + '\'s phone. They hear the amount and approve it.';
     say('Sent to ' + r.customer_name + '. Waiting for approval.');
+    $('call-msg').textContent = ''; $('call-btn').disabled = false;
     clearInterval(poll); clearInterval(timer);
     timer = setInterval(tick, 1000); tick();
     poll = setInterval(check, 700);
@@ -315,9 +325,41 @@ async function check() {
   if (!sale) return;
   try {
     const r = await api('/api/pos/requests/' + sale.id);
+    if (r.call && r.call !== sale.call) { sale.call = r.call; showCall(r.call); }
     if (r.status !== 'pending') { sale.reference = r.reference; finish(r.status); }
   } catch {}
 }
+/* ---------- approval by phone call ---------- */
+$('call-phone').value = settings.callPhone || '';
+function showCall(state) {
+  const who = sale ? sale.name.split(' ')[0] : 'the customer';
+  const text = {
+    calling: 'Calling ' + who + '…',
+    answered: who + ' picked up. She hears the amount and types her PIN.',
+    failed: 'Couldn\'t reach ' + who + '\'s phone. Try again, or she can approve in the app.',
+    ended: 'Call ended.',
+  }[state];
+  if (text) $('call-msg').textContent = text;
+  if (state === 'answered') $('wait-text').textContent = 'On the phone with ' + sale.name + '.';
+  $('call-btn').disabled = state === 'calling' || state === 'answered';
+}
+$('call-btn').onclick = async () => {
+  if (!sale) return;
+  const phone = $('call-phone').value.trim();
+  settings.callPhone = phone; save();
+  $('call-btn').disabled = true;
+  $('call-msg').textContent = 'Starting the call…';
+  try {
+    const r = await api('/api/pos/requests/' + sale.id + '/call', phone ? { phone } : {});
+    sale.call = 'calling';
+    $('call-msg').textContent = 'Calling ' + r.phone + '…';
+  } catch (e) {
+    $('call-msg').textContent = e.message;
+    $('call-btn').disabled = false;
+  }
+};
+$('call-phone').onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); $('call-btn').click(); } };
+
 $('cancel-wait').onclick = async () => { if (sale) { try { await api('/api/pos/requests/' + sale.id + '/cancel', {}); } catch {} } finish('cancelled'); };
 
 function finish(status, message) {

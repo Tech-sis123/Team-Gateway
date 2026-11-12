@@ -9,6 +9,7 @@ const db = require('./db');
 const push = require('./push');
 const tts = require('./tts');
 const auth = require('./auth');
+const calls = require('./calls');
 const i18n = require('./public/i18n');
 
 const PORT = process.env.PORT || 3000;
@@ -25,6 +26,8 @@ const DEMO_AUTO_LINK = process.env.DEMO_AUTO_LINK ?? 'demo';
 const DEMO_ON = (process.env.DEMO_CUSTOMER || 'on') !== 'off';
 const DEMO = { id: 'cus_demo_amaka', tapnod_id: 'TN-0001-AO', name: 'Amaka Okafor', account_number: '0123456789', pin: '1234' };
 const REQUEST_TTL_MS = 120_000;
+// Phone number the POS rings for the demo customer when none is typed (e.g. 08031234567).
+const DEMO_PHONE = process.env.DEMO_PHONE || '';
 const LANGS = Object.keys(i18n.LANGS);
 
 const vapid = push.vapidFromSecret(APP_SECRET);
@@ -419,7 +422,54 @@ async function route(req, res) {
     const r = requests.get(match[1]);
     if (!r) return send(res, 404, { message: 'Request not found.' });
     refresh(r);
-    return send(res, 200, { status: r.status, reference: r.reference });
+    return send(res, 200, { status: r.status, reference: r.reference, call: r.call ? r.call.status : null });
+  }
+
+  // Ask for approval by phone call instead: LiveKit rings the customer and she types her PIN on the keypad.
+  if (m === 'POST' && (match = p.match(/^\/api\/pos\/requests\/([\w-]+)\/call$/))) {
+    const r = requests.get(match[1]);
+    if (!r || refresh(r).status !== 'pending') return send(res, 409, { message: 'This payment is no longer waiting.' });
+    if (!calls.enabled()) return send(res, 503, { message: 'Phone calls are not set up on this server yet.' });
+    const b = (await readJson(req)) || {};
+    const c = await db.getCustomer(r.customer_id);
+    const phone = calls.normalisePhone(b.phone || (c && c.phone) || (c && c.id === DEMO.id ? DEMO_PHONE : ''));
+    if (!phone) return send(res, 400, { message: 'Type the customer\'s phone number, like 0803 123 4567.' });
+    const room = 'tapnod-call-' + r.request_id;
+    r.call = { status: 'calling', phone };
+    try {
+      await calls.dial(room, {
+        request_id: r.request_id,
+        call_token: calls.callToken(APP_SECRET, r.request_id),
+        callback: siteOf(req).origin + '/api/voice/requests/' + r.request_id,
+        phone,
+        first_name: String((c && c.name) || '').split(' ')[0],
+        merchant: r.merchant_name,
+        amount_words: i18n.moneyWords(r.amount_kobo),
+      });
+    } catch (e) {
+      console.warn('call failed', e.message);
+      r.call.status = 'failed';
+      return send(res, 502, { message: 'Couldn\'t start the call. Check the LiveKit settings.' });
+    }
+    return send(res, 200, { ok: true, phone: calls.maskPhone(phone) });
+  }
+
+  // The phone-call agent reports back here: call progress, and the customer's choice with her PIN.
+  if (m === 'POST' && (match = p.match(/^\/api\/voice\/requests\/([\w-]+)$/))) {
+    const r = requests.get(match[1]);
+    const b = (await readJson(req)) || {};
+    if (!r || !calls.checkCallToken(APP_SECRET, r.request_id, b.call_token)) return send(res, 403, { message: 'Not allowed.' });
+    refresh(r);
+    if (b.action === 'call_status' && r.call && ['answered', 'failed', 'ended'].includes(b.status)) r.call.status = b.status;
+    if (b.action === 'approve' || b.action === 'decline') {
+      if (r.status !== 'pending') return send(res, 409, { status: r.status });
+      if (b.action === 'approve') {
+        const c = await db.getCustomer(r.customer_id);
+        if (!c || !auth.checkPassword(String(b.pin || ''), c.password_hash)) return send(res, 401, { status: r.status, message: 'Wrong PIN.' });
+      }
+      r.status = b.action === 'approve' ? 'approved' : 'declined';
+    }
+    return send(res, 200, { status: r.status });
   }
 
   if (m === 'POST' && (match = p.match(/^\/api\/pos\/requests\/([\w-]+)\/cancel$/))) {

@@ -41,6 +41,7 @@ The card number never leaves the POS. It becomes a one-way token (HMAC-SHA256) t
 - **Fingerprint or Face ID approval.** The fingerprint prompt opens as soon as the payment is read out. Any biometric the phone has works: fingerprint, Face ID, Touch ID or Windows Hello. These are WebAuthn passkeys, and the server checks each signature against a challenge made for that exact payment.
 - **PIN fallback.** A big keypad for customers without a fingerprint. The voice says how many digits were typed, never which ones.
 - **Phone notifications** (Web Push) that work even when the browser is closed.
+- **Approval by phone call** for customers without a smartphone or data. The POS rings her, a voice reads the payment, and she presses 1 and types her PIN on the keypad. Works on any phone.
 - **Laptop POS.** Keypad, card scan through the webcam, USB card reader support, or pick a customer by name. The POS stays silent, so only the customer hears the amount.
 - **Nigerian voices** through YarnGPT when an API key is set. Otherwise the phone's own voice is used.
 
@@ -53,6 +54,36 @@ The card number never leaves the POS. It becomes a one-way token (HMAC-SHA256) t
 5. **Laptop:** shows **Payment approved** with the receipt. The phone goes back to waiting on its own.
 
 Tips: keep Chrome open on the phone with the volume up, and put both devices on the same reliable network (a phone hotspot works well).
+
+## Approval by phone call
+
+For customers with a basic phone, or when the app isn't open. On the POS waiting screen, type her number (or leave it empty to use the one on her account) and press **Call her phone**.
+
+```text
+ POS: Call her phone ──> Tapnod server ──> LiveKit ──> caller agent ──> rings her phone
+                                                         │
+   "Hello Amaka. Bisi Ventures is asking you to pay fifteen thousand naira.
+    To approve, press 1. To decline, press 2."   ->  1  ->  "Type your 4 digit Tapnod PIN"
+                                                         │
+ POS shows Approved <── Tapnod server checks the PIN <───┘
+```
+
+- The PIN is never read back, and she gets 3 tries.
+- If she approves in the app while on the call, the call ends by itself.
+- Each call carries a one-time code from the server, so nothing else can approve through the voice endpoint.
+
+**Set up (once):**
+
+1. In your [LiveKit Cloud](https://cloud.livekit.io) project, open **Telephony** and add an **outbound SIP trunk** from a provider that can call Nigerian numbers (for example Twilio or Telnyx). Copy its trunk ID (`ST_...`).
+2. Deploy the agent in `caller/`:
+   ```bash
+   cd caller
+   cp .env.example .env          # fill in the LiveKit keys, SIP_OUTBOUND_TRUNK_ID and DEEPGRAM_API_KEY
+   lk agent create --secrets-file .env    # first time
+   lk agent deploy                        # after changes
+   ```
+   To try it on your laptop instead: `pip install -r requirements.txt && python agent.py dev`.
+3. Give the server the same LiveKit project: set `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` (and `DEMO_PHONE` for Amaka). On Kubernetes, create the `tapnod-calls` secret shown in `k8s/app.yaml`, then `kubectl rollout restart deployment/app`.
 
 ## Run it on your computer
 
@@ -85,6 +116,9 @@ The tables are created automatically on start.
 | `VAPID_SECRET` | Signs sessions and notification keys. Falls back to `TOKEN_SECRET`. |
 | `YARNGPT_API_KEY` | Turns on Nigerian voices. |
 | `DEMO_CUSTOMER` | Creates the demo customer Amaka on start. Set to `off` to disable. |
+| `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | Turn on approval by phone call (see above). |
+| `CALL_AGENT_NAME` | Name of the phone-call agent. Default `tapnod-caller`. |
+| `DEMO_PHONE` | Number the POS rings for Amaka when none is typed, e.g. `08031234567`. |
 | `DEMO_AUTO_LINK` | What happens when an unknown card is tapped: `demo` charges Amaka (default), `latest` charges the newest sign-up, a customer id charges that customer, empty shows "Card not linked". |
 
 ## Deploy
@@ -131,6 +165,8 @@ Customer requests use the header `Authorization: Bearer <token>`.
 | `GET /api/pos/requests/{id}` | Status: `pending`, `approved`, `declined`, `expired` or `cancelled` |
 | `POST /api/pos/requests/{id}/cancel` | The shop cancels while waiting |
 | `POST /api/pos/cards/link` | Link a card token to a customer |
+| `POST /api/pos/requests/{id}/call` | Ring the customer for approval (optional `phone`) |
+| `POST /api/voice/requests/{id}` | Used by the phone-call agent: call progress, approve with PIN, decline |
 
 ## Project layout
 
@@ -147,6 +183,9 @@ server/
   public/i18n.js         English, Pidgin, Yorùbá, Igbo, Hausa
   public/sw.js           Shows notifications when the page is closed
   public/tapnod.css      Shared styles
+  calls.js               Starts phone calls through LiveKit
+caller/
+  agent.py               LiveKit agent: rings the customer, reads the payment, takes her PIN
 Dockerfile               Container image
 k8s/app.yaml             Kubernetes Deployment and Service
 .github/workflows/       Builds and publishes the image
